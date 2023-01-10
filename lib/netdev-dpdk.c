@@ -5194,25 +5194,52 @@ static const struct dpdk_qos_ops trtcm_policer_ops = {
 };
 
 static int
+dpdk_cp_prot_add_flow_dry_run(struct netdev_dpdk *dev,
+                      const struct rte_flow_attr *attr,
+                      const struct rte_flow_item items[],
+                      const struct rte_flow_action actions[],
+                      const char *desc)
+{
+    struct rte_flow_error error;
+    int ret;
+
+    ret = rte_flow_validate(dev->port_id, attr, items, actions, &error);
+    if (ret) {
+        VLOG_WARN("%s: cp-protection: device does not support %s flow: %s",
+                  netdev_get_name(&dev->up), desc, error.message);
+    }
+    return ret;
+}
+
+static int
+dpdk_cp_prot_add_traffic_flow_dry_run(struct netdev_dpdk *dev,
+                              const struct rte_flow_item items[],
+                              const char *desc)
+{
+    const struct rte_flow_attr attr = { .ingress = 1 };
+    const struct rte_flow_action actions[] = {
+        {
+            .type = RTE_FLOW_ACTION_TYPE_QUEUE,
+            .conf = &(const struct rte_flow_action_queue) {
+                .index = dev->up.n_rxq - 1,
+            },
+        },
+        { .type = RTE_FLOW_ACTION_TYPE_END },
+    };
+
+    return dpdk_cp_prot_add_flow_dry_run(dev, &attr, items, actions, desc);
+}
+
+static int
 dpdk_cp_prot_add_flow(struct netdev_dpdk *dev,
                       const struct rte_flow_attr *attr,
                       const struct rte_flow_item items[],
                       const struct rte_flow_action actions[],
-                      const char *desc, bool dry_run)
+                      const char *desc)
 {
     struct rte_flow_error error;
     struct rte_flow *flow;
     size_t num;
-
-    if (dry_run) {
-        int ret;
-        ret = rte_flow_validate(dev->port_id, attr, items, actions, &error);
-        if (ret) {
-            VLOG_WARN("%s: cp-protection: device does not support %s flow: %s",
-                      netdev_get_name(&dev->up), desc, error.message);
-        }
-        return ret;
-    }
 
     flow = rte_flow_create(dev->port_id, attr, items, actions, &error);
     if (flow == NULL) {
@@ -5232,7 +5259,7 @@ dpdk_cp_prot_add_flow(struct netdev_dpdk *dev,
 static int
 dpdk_cp_prot_add_traffic_flow(struct netdev_dpdk *dev,
                               const struct rte_flow_item items[],
-                              const char *desc, bool dry_run)
+                              const char *desc)
 {
     const struct rte_flow_attr attr = { .ingress = 1 };
     const struct rte_flow_action actions[] = {
@@ -5246,8 +5273,8 @@ dpdk_cp_prot_add_traffic_flow(struct netdev_dpdk *dev,
     };
     int err;
 
-    err = dpdk_cp_prot_add_flow(dev, &attr, items, actions, desc, dry_run);
-    if (!dry_run && !err) {
+    err = dpdk_cp_prot_add_flow(dev, &attr, items, actions, desc);
+    if (!err) {
         VLOG_INFO("%s: cp-protection: redirected %s traffic to rx queue %d",
                   netdev_get_name(&dev->up), desc, dev->up.n_rxq - 1);
     }
@@ -5311,7 +5338,34 @@ dpdk_cp_prot_rss_configure(struct netdev_dpdk *dev, int rss_n_rxq)
 }
 
 static int
-dpdk_cp_prot_configure(struct netdev_dpdk *dev, bool dry_run)
+dpdk_cp_prot_configure_dry_run(struct netdev_dpdk *dev)
+{
+    int err = 0;
+
+    if (dev->requested_cp_prot_flags & DPDK_CP_PROT_LACP) {
+        err = dpdk_cp_prot_add_traffic_flow_dry_run(
+            dev,
+            (const struct rte_flow_item []) {
+                {
+                    .type = RTE_FLOW_ITEM_TYPE_ETH,
+                    .spec = &(const struct rte_flow_item_eth){
+                        .type = htons(ETH_TYPE_LACP),
+                    },
+                    .mask = &(const struct rte_flow_item_eth){
+                        .type = htons(0xffff),
+                    },
+                },
+                { .type = RTE_FLOW_ITEM_TYPE_END },
+            },
+            "lacp"
+        );
+    }
+
+    return err;
+}
+
+static int
+dpdk_cp_prot_configure(struct netdev_dpdk *dev)
 {
     int err = 0;
 
@@ -5330,15 +5384,14 @@ dpdk_cp_prot_configure(struct netdev_dpdk *dev, bool dry_run)
                 },
                 { .type = RTE_FLOW_ITEM_TYPE_END },
             },
-            "lacp",
-            dry_run
+            "lacp"
         );
         if (err) {
             goto out;
         }
     }
 
-    if (!dry_run && dev->cp_prot_flows_num) {
+    if (dev->cp_prot_flows_num) {
         /* reconfigure RSS reta in all but the cp protection queue */
         err = dpdk_cp_prot_rss_configure(dev, dev->up.n_rxq - 1);
         if (!err) {
@@ -5476,11 +5529,11 @@ retry_no_cp_prot:
         }
         if (!err) {
             /* dry run first */
-            err = dpdk_cp_prot_configure(dev, true);
+            err = dpdk_cp_prot_configure_dry_run(dev);
         }
         if (!err) {
             /* if no error, apply configuration */
-            err = dpdk_cp_prot_configure(dev, false);
+            err = dpdk_cp_prot_configure(dev);
         }
         if (err) {
             /* no hw support, disable & recover gracefully */
