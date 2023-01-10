@@ -5263,10 +5263,7 @@ dpdk_cp_prot_rss_configure(struct netdev_dpdk *dev, int rss_n_rxq)
     struct rte_eth_dev_info info;
     int err;
 
-    err = rte_eth_dev_info_get(dev->port_id, &info);
-    if (err < 0) {
-        goto out;
-    }
+    rte_eth_dev_info_get(dev->port_id, &info);
 
     if (info.reta_size % rss_n_rxq != 0 &&
         info.reta_size < RTE_ETH_RSS_RETA_SIZE_128) {
@@ -5310,7 +5307,6 @@ dpdk_cp_prot_rss_configure(struct netdev_dpdk *dev, int rss_n_rxq)
                   netdev_get_name(&dev->up), err);
     }
 
-out:
     return err;
 }
 
