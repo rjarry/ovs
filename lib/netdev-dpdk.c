@@ -512,6 +512,9 @@ struct netdev_dpdk {
         int requested_rxq_size;
         int requested_txq_size;
 
+        /* User input for n_rxq (see netdev_dpdk_reconfigure). */
+        int user_n_rxq;
+
         /* Number of rx/tx descriptors for physical devices */
         int rxq_size;
         int txq_size;
@@ -1320,6 +1323,7 @@ common_construct(struct netdev *netdev, dpdk_port_t port_no,
     netdev->n_rxq = 0;
     netdev->n_txq = 0;
     dev->requested_n_rxq = NR_QUEUE;
+    dev->user_n_rxq = NR_QUEUE;
     dev->requested_n_txq = NR_QUEUE;
     dev->requested_rxq_size = NIC_PORT_DEFAULT_RXQ_SIZE;
     dev->requested_txq_size = NIC_PORT_DEFAULT_TXQ_SIZE;
@@ -1927,11 +1931,8 @@ dpdk_set_rxq_config(struct netdev_dpdk *dev, const struct smap *args)
     int new_n_rxq;
 
     new_n_rxq = MAX(smap_get_int(args, "n_rxq", NR_QUEUE), 1);
-    if (dev->requested_cp_prot_flags) {
-        new_n_rxq += 1;
-    }
-    if (new_n_rxq != dev->requested_n_rxq) {
-        dev->requested_n_rxq = new_n_rxq;
+    if (new_n_rxq != dev->user_n_rxq) {
+        dev->user_n_rxq = new_n_rxq;
         netdev_request_reconfigure(&dev->up);
     }
 }
@@ -5397,6 +5398,12 @@ netdev_dpdk_reconfigure(struct netdev *netdev)
 
     ovs_mutex_lock(&dev->mutex);
 
+    try_cp_prot = dev->requested_cp_prot_flags != 0;
+    dev->requested_n_rxq = dev->user_n_rxq;
+    if (try_cp_prot) {
+        dev->requested_n_rxq += 1;
+    }
+
     if (netdev->n_txq == dev->requested_n_txq
         && netdev->n_rxq == dev->requested_n_rxq
         && dev->cp_prot_flags == dev->requested_cp_prot_flags
@@ -5412,9 +5419,7 @@ netdev_dpdk_reconfigure(struct netdev *netdev)
         goto out;
     }
 
-    try_cp_prot = dev->requested_cp_prot_flags != 0;
 retry_no_cp_prot:
-
     if (dev->reset_needed) {
         rte_eth_dev_reset(dev->port_id);
         if_notifier_manual_report();
