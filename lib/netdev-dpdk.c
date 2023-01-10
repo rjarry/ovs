@@ -5193,57 +5193,6 @@ static const struct dpdk_qos_ops trtcm_policer_ops = {
     .qos_queue_dump_state_init = trtcm_policer_qos_queue_dump_state_init
 };
 
-static int
-dpdk_cp_prot_add_flow(struct netdev_dpdk *dev,
-                      const struct rte_flow_attr *attr,
-                      const struct rte_flow_item items[],
-                      const struct rte_flow_action actions[],
-                      const char *desc)
-{
-    struct rte_flow_error error;
-    struct rte_flow *flow;
-    size_t num;
-
-    flow = rte_flow_create(dev->port_id, attr, items, actions, &error);
-    if (flow == NULL) {
-        VLOG_WARN("%s: cp-protection: failed to add %s flow: %s",
-                  netdev_get_name(&dev->up), desc, error.message);
-        return rte_errno;
-    }
-
-    num = dev->cp_prot_flows_num + 1;
-    dev->cp_prot_flows = xrealloc(dev->cp_prot_flows, sizeof(flow) * num);
-    dev->cp_prot_flows[dev->cp_prot_flows_num] = flow;
-    dev->cp_prot_flows_num = num;
-
-    return 0;
-}
-
-static int
-dpdk_cp_prot_add_traffic_flow(struct netdev_dpdk *dev,
-                              const struct rte_flow_item items[],
-                              const char *desc)
-{
-    const struct rte_flow_attr attr = { .ingress = 1 };
-    const struct rte_flow_action actions[] = {
-        {
-            .type = RTE_FLOW_ACTION_TYPE_QUEUE,
-            .conf = &(const struct rte_flow_action_queue) {
-                .index = dev->up.n_rxq - 1,
-            },
-        },
-        { .type = RTE_FLOW_ACTION_TYPE_END },
-    };
-    int err;
-
-    err = dpdk_cp_prot_add_flow(dev, &attr, items, actions, desc);
-    if (!err) {
-        VLOG_INFO("%s: cp-protection: redirected %s traffic to rx queue %d",
-                  netdev_get_name(&dev->up), desc, dev->up.n_rxq - 1);
-    }
-    return err;
-}
-
 #define RETA_CONF_SIZE (RTE_ETH_RSS_RETA_SIZE_512 / RTE_ETH_RETA_GROUP_SIZE)
 
 static int
@@ -5344,28 +5293,50 @@ dpdk_cp_prot_configure_dry_run(struct netdev_dpdk *dev)
 static int
 dpdk_cp_prot_configure(struct netdev_dpdk *dev)
 {
+    const struct rte_flow_attr attr = { .ingress = 1 };
+    const struct rte_flow_action actions[] = {
+        {
+            .type = RTE_FLOW_ACTION_TYPE_QUEUE,
+            .conf = &(const struct rte_flow_action_queue) {
+                .index = dev->up.n_rxq - 1,
+            },
+        },
+        { .type = RTE_FLOW_ACTION_TYPE_END },
+    };
+    struct rte_flow_error error;
+    struct rte_flow *flow;
+    size_t num;
     int err = 0;
 
     if (dev->requested_cp_prot_flags & DPDK_CP_PROT_LACP) {
-        err = dpdk_cp_prot_add_traffic_flow(
-            dev,
-            (const struct rte_flow_item []) {
-                {
-                    .type = RTE_FLOW_ITEM_TYPE_ETH,
-                    .spec = &(const struct rte_flow_item_eth){
-                        .type = htons(ETH_TYPE_LACP),
-                    },
-                    .mask = &(const struct rte_flow_item_eth){
-                        .type = htons(0xffff),
-                    },
+        const struct rte_flow_item lacp_flow_item[] = {
+            {
+                .type = RTE_FLOW_ITEM_TYPE_ETH,
+                .spec = &(const struct rte_flow_item_eth){
+                    .type = htons(ETH_TYPE_LACP),
                 },
-                { .type = RTE_FLOW_ITEM_TYPE_END },
+                .mask = &(const struct rte_flow_item_eth){
+                    .type = htons(0xffff),
+                },
             },
-            "lacp"
-        );
-        if (err) {
-            goto out;
+            { .type = RTE_FLOW_ITEM_TYPE_END },
+        };
+
+        flow = rte_flow_create(dev->port_id, &attr, lacp_flow_item, actions,
+                               &error);
+        if (flow == NULL) {
+            VLOG_WARN("%s: cp-protection: failed to add %s flow: %s",
+                      netdev_get_name(&dev->up), "lacp", error.message);
+            return rte_errno;
         }
+
+        num = dev->cp_prot_flows_num + 1;
+        dev->cp_prot_flows = xrealloc(dev->cp_prot_flows, sizeof(flow) * num);
+        dev->cp_prot_flows[dev->cp_prot_flows_num] = flow;
+        dev->cp_prot_flows_num = num;
+
+        VLOG_INFO("%s: cp-protection: redirected %s traffic to rx queue %d",
+                  netdev_get_name(&dev->up), "lacp", dev->up.n_rxq - 1);
     }
 
     if (dev->cp_prot_flows_num) {
@@ -5382,7 +5353,6 @@ dpdk_cp_prot_configure(struct netdev_dpdk *dev)
         }
     }
 
-out:
     return err;
 }
 
