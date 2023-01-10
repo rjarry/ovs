@@ -415,8 +415,7 @@ enum dpdk_hw_ol_features {
 };
 
 enum dpdk_cp_prot_flags {
-    DPDK_CP_PROT_UNSUPPORTED = 1 << 0,
-    DPDK_CP_PROT_LACP = 1 << 1,
+    DPDK_CP_PROT_LACP = 1 << 0,
 };
 
 /*
@@ -1928,8 +1927,7 @@ dpdk_set_rxq_config(struct netdev_dpdk *dev, const struct smap *args)
     int new_n_rxq;
 
     new_n_rxq = MAX(smap_get_int(args, "n_rxq", NR_QUEUE), 1);
-    if ((dev->requested_cp_prot_flags & ~DPDK_CP_PROT_UNSUPPORTED) &&
-            !(dev->requested_cp_prot_flags & DPDK_CP_PROT_UNSUPPORTED)) {
+    if (dev->requested_cp_prot_flags) {
         new_n_rxq += 1;
     }
     if (new_n_rxq != dev->requested_n_rxq) {
@@ -1991,7 +1989,7 @@ dpdk_cp_prot_set_config(struct netdev *netdev, struct netdev_dpdk *dev,
         flags = 0;
     }
 
-    if (flags != (dev->requested_cp_prot_flags & ~DPDK_CP_PROT_UNSUPPORTED)) {
+    if (flags != dev->requested_cp_prot_flags) {
         dev->requested_cp_prot_flags = flags;
         netdev_request_reconfigure(netdev);
     }
@@ -3895,6 +3893,7 @@ netdev_dpdk_get_status(const struct netdev *netdev, struct smap *args)
 {
     struct netdev_dpdk *dev = netdev_dpdk_cast(netdev);
     struct rte_eth_dev_info dev_info;
+    size_t cp_prot_flows_num;
     uint64_t cp_prot_flags;
     const char *bus_info;
     uint32_t link_speed;
@@ -3912,6 +3911,7 @@ netdev_dpdk_get_status(const struct netdev *netdev, struct smap *args)
     dev_flags = *dev_info.dev_flags;
     bus_info = rte_dev_bus_info(dev_info.device);
     cp_prot_flags = dev->cp_prot_flags;
+    cp_prot_flows_num = dev->cp_prot_flows_num;
     n_rxq = netdev->n_rxq;
     ovs_mutex_unlock(&dev->mutex);
     ovs_mutex_unlock(&dpdk_mutex);
@@ -3956,7 +3956,7 @@ netdev_dpdk_get_status(const struct netdev *netdev, struct smap *args)
     }
 
     if (cp_prot_flags) {
-        if (cp_prot_flags & DPDK_CP_PROT_UNSUPPORTED) {
+        if (!cp_prot_flows_num) {
             smap_add(args, "cp_protection", "unsupported");
         } else {
             smap_add_format(args, "cp_protection_queue", "%d", n_rxq - 1);
@@ -5392,6 +5392,7 @@ static int
 netdev_dpdk_reconfigure(struct netdev *netdev)
 {
     struct netdev_dpdk *dev = netdev_dpdk_cast(netdev);
+    bool try_cp_prot;
     int err = 0;
 
     ovs_mutex_lock(&dev->mutex);
@@ -5410,6 +5411,9 @@ netdev_dpdk_reconfigure(struct netdev *netdev)
 
         goto out;
     }
+
+    try_cp_prot = dev->requested_cp_prot_flags != 0;
+retry_no_cp_prot:
 
     if (dev->reset_needed) {
         rte_eth_dev_reset(dev->port_id);
@@ -5468,12 +5472,7 @@ netdev_dpdk_reconfigure(struct netdev *netdev)
      */
     dev->requested_hwaddr = dev->hwaddr;
 
-    dev->tx_q = netdev_dpdk_alloc_txq(netdev->n_txq);
-    if (!dev->tx_q) {
-        err = ENOMEM;
-    }
-    if (!err && dev->requested_cp_prot_flags &&
-            !(dev->requested_cp_prot_flags & DPDK_CP_PROT_UNSUPPORTED)) {
+    if (try_cp_prot) {
         /* dry run first */
         err = dpdk_cp_prot_configure(dev, true);
         if (!err) {
@@ -5482,19 +5481,23 @@ netdev_dpdk_reconfigure(struct netdev *netdev)
         }
         if (err) {
             /* no hw support, disable & recover gracefully */
-            err = 0;
-            dev->requested_cp_prot_flags |= DPDK_CP_PROT_UNSUPPORTED;
+            try_cp_prot = false;
             /*
              * The extra queue must be explicitly removed here to ensure that
              * it is unconfigured immediately.
              */
             dev->requested_n_rxq -= 1;
-            netdev_request_reconfigure(netdev);
+            goto retry_no_cp_prot;
         }
-    } else if (dev->cp_prot_flags != dev->requested_cp_prot_flags) {
+    } else {
         VLOG_INFO("%s: cp-protection: disabled", netdev_get_name(&dev->up));
     }
     dev->cp_prot_flags = dev->requested_cp_prot_flags;
+
+    dev->tx_q = netdev_dpdk_alloc_txq(netdev->n_txq);
+    if (!dev->tx_q) {
+        err = ENOMEM;
+    }
 
     netdev_change_seq_changed(netdev);
 
