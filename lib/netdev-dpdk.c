@@ -1514,9 +1514,6 @@ netdev_dpdk_destruct(struct netdev *netdev)
 
     ovs_mutex_lock(&dpdk_mutex);
 
-    /* Destroy any rte flows to allow RXQs to be removed. */
-    dpdk_cp_prot_unconfigure(dev);
-
     rte_eth_dev_stop(dev->port_id);
     dev->started = false;
 
@@ -1546,6 +1543,9 @@ netdev_dpdk_destruct(struct netdev *netdev)
                 break;
             }
         }
+
+        /* Destroy any rte flows to allow RXQs to be removed. */
+        dpdk_cp_prot_unconfigure(dev);
 
         /* Retrieve eth device data before closing it. */
         rte_eth_dev_info_get(dev->port_id, &dev_info);
@@ -5385,8 +5385,6 @@ netdev_dpdk_reconfigure(struct netdev *netdev)
     }
 
 retry:
-    dpdk_cp_prot_unconfigure(dev);
-
     if (dev->reset_needed) {
         rte_eth_dev_reset(dev->port_id);
         if_notifier_manual_report();
@@ -5396,6 +5394,8 @@ retry:
     }
 
     dev->started = false;
+
+    dpdk_cp_prot_unconfigure(dev);
 
     err = netdev_dpdk_mempool_configure(dev);
     if (err && err != EEXIST) {
