@@ -1514,6 +1514,9 @@ netdev_dpdk_destruct(struct netdev *netdev)
 
     ovs_mutex_lock(&dpdk_mutex);
 
+    /* Destroy any rte flows to allow RXQs to be removed. */
+    dpdk_cp_prot_unconfigure(dev);
+
     rte_eth_dev_stop(dev->port_id);
     dev->started = false;
 
@@ -1543,9 +1546,6 @@ netdev_dpdk_destruct(struct netdev *netdev)
                 break;
             }
         }
-
-        /* Destroy any rte flows to allow RXQs to be removed. */
-        dpdk_cp_prot_unconfigure(dev);
 
         /* Retrieve eth device data before closing it. */
         rte_eth_dev_info_get(dev->port_id, &dev_info);
@@ -2015,7 +2015,6 @@ netdev_dpdk_set_config(struct netdev *netdev, const struct smap *args,
     ovs_mutex_lock(&dpdk_mutex);
     ovs_mutex_lock(&dev->mutex);
 
-    /* needs to be called before rxq_config */
     dpdk_cp_prot_set_config(netdev, dev, args, errp);
 
     dpdk_set_rxq_config(dev, args);
@@ -5253,33 +5252,40 @@ static int
 dpdk_cp_prot_configure(struct netdev_dpdk *dev)
 {
     const struct rte_flow_attr attr = { .ingress = 1 };
-    const struct rte_flow_action actions[] = {
-        {
-            .type = RTE_FLOW_ACTION_TYPE_QUEUE,
-            .conf = &(const struct rte_flow_action_queue) {
-                .index = dev->up.n_rxq - 1,
-            },
-        },
-        { .type = RTE_FLOW_ACTION_TYPE_END },
-    };
-    const struct rte_flow_item lacp_flow_item[] = {
-        {
-            .type = RTE_FLOW_ITEM_TYPE_ETH,
-            .spec = &(const struct rte_flow_item_eth){
-                .type = htons(ETH_TYPE_LACP),
-            },
-            .mask = &(const struct rte_flow_item_eth){
-                .type = htons(0xffff),
-            },
-        },
-        { .type = RTE_FLOW_ITEM_TYPE_END },
-    };
     struct rte_flow_error error;
     struct rte_flow *flow;
     size_t num;
     int err = 0;
 
+    if (dev->up.n_rxq < 2) {
+        err = ENOTSUP;
+        VLOG_WARN("%s: cp-protection: not enough available rx queues",
+                  netdev_get_name(&dev->up));
+        goto out;
+    }
+
     if (dev->requested_cp_prot_flags & DPDK_CP_PROT_LACP) {
+        const struct rte_flow_action actions[] = {
+            {
+                .type = RTE_FLOW_ACTION_TYPE_QUEUE,
+                .conf = &(const struct rte_flow_action_queue) {
+                    .index = dev->up.n_rxq - 1,
+                },
+            },
+            { .type = RTE_FLOW_ACTION_TYPE_END },
+        };
+        const struct rte_flow_item lacp_flow_item[] = {
+            {
+                .type = RTE_FLOW_ITEM_TYPE_ETH,
+                .spec = &(const struct rte_flow_item_eth){
+                    .type = htons(ETH_TYPE_LACP),
+                },
+                .mask = &(const struct rte_flow_item_eth){
+                    .type = htons(0xffff),
+                },
+            },
+            { .type = RTE_FLOW_ITEM_TYPE_END },
+        };
         err = rte_flow_validate(dev->port_id, &attr, lacp_flow_item, actions,
                                 &error);
         if (err) {
@@ -5287,9 +5293,7 @@ dpdk_cp_prot_configure(struct netdev_dpdk *dev)
                       netdev_get_name(&dev->up), "lacp", error.message);
             goto out;
         }
-    }
 
-    if (dev->requested_cp_prot_flags & DPDK_CP_PROT_LACP) {
         flow = rte_flow_create(dev->port_id, &attr, lacp_flow_item, actions,
                                &error);
         if (flow == NULL) {
@@ -5331,7 +5335,7 @@ dpdk_cp_prot_unconfigure(struct netdev_dpdk *dev)
 {
     struct rte_flow_error error;
 
-    if (dev->cp_prot_flows_num == 0) {
+    if (!dev->cp_prot_flows_num) {
         return;
     }
 
@@ -5380,7 +5384,9 @@ netdev_dpdk_reconfigure(struct netdev *netdev)
         goto out;
     }
 
-retry_no_cp_prot:
+retry:
+    dpdk_cp_prot_unconfigure(dev);
+
     if (dev->reset_needed) {
         rte_eth_dev_reset(dev->port_id);
         if_notifier_manual_report();
@@ -5395,8 +5401,6 @@ retry_no_cp_prot:
     if (err && err != EEXIST) {
         goto out;
     }
-
-    dpdk_cp_prot_unconfigure(dev);
 
     dev->lsc_interrupt_mode = dev->requested_lsc_interrupt_mode;
 
@@ -5439,13 +5443,7 @@ retry_no_cp_prot:
     dev->requested_hwaddr = dev->hwaddr;
 
     if (try_cp_prot) {
-        if (dev->up.n_rxq < 2) {
-            err = ENOTSUP;
-            VLOG_WARN("%s: cp-protection: not enough available rx queues",
-                      netdev_get_name(&dev->up));
-        } else {
-            err = dpdk_cp_prot_configure(dev);
-        }
+        err = dpdk_cp_prot_configure(dev);
         if (err) {
             /* no hw support, disable & recover gracefully */
             try_cp_prot = false;
@@ -5453,8 +5451,8 @@ retry_no_cp_prot:
              * The extra queue must be explicitly removed here to ensure that
              * it is unconfigured immediately.
              */
-            dev->requested_n_rxq -= 1;
-            goto retry_no_cp_prot;
+            dev->requested_n_rxq = dev->user_n_rxq;
+            goto retry;
         }
     } else {
         VLOG_INFO("%s: cp-protection: disabled", netdev_get_name(&dev->up));
