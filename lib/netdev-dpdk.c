@@ -5244,31 +5244,24 @@ dpdk_cp_prot_add_traffic_flow(struct netdev_dpdk *dev,
         },
         { .type = RTE_FLOW_ACTION_TYPE_END },
     };
+    int err;
 
-    if (!dry_run) {
-        VLOG_INFO("%s: cp-protection: redirecting %s traffic to queue %d",
+    err = dpdk_cp_prot_add_flow(dev, &attr, items, actions, desc, dry_run);
+    if (!dry_run && !err) {
+        VLOG_INFO("%s: cp-protection: redirected %s traffic to rx queue %d",
                   netdev_get_name(&dev->up), desc, dev->up.n_rxq - 1);
     }
-    return dpdk_cp_prot_add_flow(dev, &attr, items, actions, desc, dry_run);
+    return err;
 }
 
 #define RETA_CONF_SIZE (RTE_ETH_RSS_RETA_SIZE_512 / RTE_ETH_RETA_GROUP_SIZE)
 
 static int
-dpdk_cp_prot_rss_configure(struct netdev_dpdk *dev, int rss_n_rxq,
-                           bool verbose)
+dpdk_cp_prot_rss_configure(struct netdev_dpdk *dev, int rss_n_rxq)
 {
     struct rte_eth_rss_reta_entry64 reta_conf[RETA_CONF_SIZE];
     struct rte_eth_dev_info info;
     int err;
-
-    if (rss_n_rxq == 1 && verbose) {
-        VLOG_INFO("%s: cp-protection: redirecting other traffic to queue 0",
-                  netdev_get_name(&dev->up));
-    } else if (verbose) {
-        VLOG_INFO("%s: cp-protection: applying rss on queues 0-%d",
-                  netdev_get_name(&dev->up), rss_n_rxq - 1);
-    }
 
     err = rte_eth_dev_info_get(dev->port_id, &info);
     if (err < 0) {
@@ -5312,12 +5305,12 @@ dpdk_cp_prot_rss_configure(struct netdev_dpdk *dev, int rss_n_rxq,
         reta_conf[idx].reta[shift] = i % rss_n_rxq;
     }
     err = rte_eth_dev_rss_reta_update(dev->port_id, reta_conf, info.reta_size);
-
-out:
     if (err < 0) {
         VLOG_WARN("%s: failed to configure RSS redirection table: err=%d",
                   netdev_get_name(&dev->up), err);
     }
+
+out:
     return err;
 }
 
@@ -5325,13 +5318,6 @@ static int
 dpdk_cp_prot_configure(struct netdev_dpdk *dev, bool dry_run)
 {
     int err = 0;
-
-    if (dev->up.n_rxq < 2) {
-        err = ENOTSUP;
-        VLOG_WARN("%s: cp-protection: not enough available rx queues",
-                  netdev_get_name(&dev->up));
-        goto out;
-    }
 
     if (dev->requested_cp_prot_flags & DPDK_CP_PROT_LACP) {
         err = dpdk_cp_prot_add_traffic_flow(
@@ -5358,7 +5344,16 @@ dpdk_cp_prot_configure(struct netdev_dpdk *dev, bool dry_run)
 
     if (!dry_run && dev->cp_prot_flows_num) {
         /* reconfigure RSS reta in all but the cp protection queue */
-        err = dpdk_cp_prot_rss_configure(dev, dev->up.n_rxq - 1, true);
+        err = dpdk_cp_prot_rss_configure(dev, dev->up.n_rxq - 1);
+        if (!err) {
+            if (dev->up.n_rxq == 2) {
+                VLOG_INFO("%s: cp-protection: redirected other traffic to "
+                          "rx queue 0", netdev_get_name(&dev->up));
+            } else {
+                VLOG_INFO("%s: cp-protection: applied rss on rx queue 0-%u",
+                          netdev_get_name(&dev->up), dev->up.n_rxq - 2);
+            }
+        }
     }
 
 out:
@@ -5386,7 +5381,7 @@ dpdk_cp_prot_unconfigure(struct netdev_dpdk *dev)
     dev->cp_prot_flows_num = 0;
     dev->cp_prot_flows = NULL;
 
-    (void) dpdk_cp_prot_rss_configure(dev, dev->up.n_rxq, false);
+    (void) dpdk_cp_prot_rss_configure(dev, dev->up.n_rxq);
 }
 
 static int
@@ -5478,8 +5473,15 @@ retry_no_cp_prot:
     dev->requested_hwaddr = dev->hwaddr;
 
     if (try_cp_prot) {
-        /* dry run first */
-        err = dpdk_cp_prot_configure(dev, true);
+        if (dev->up.n_rxq < 2) {
+            err = ENOTSUP;
+            VLOG_WARN("%s: cp-protection: not enough available rx queues",
+                      netdev_get_name(&dev->up));
+        }
+        if (!err) {
+            /* dry run first */
+            err = dpdk_cp_prot_configure(dev, true);
+        }
         if (!err) {
             /* if no error, apply configuration */
             err = dpdk_cp_prot_configure(dev, false);
