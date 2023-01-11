@@ -542,7 +542,7 @@ struct netdev_dpdk {
         struct eth_addr requested_hwaddr;
 
         /* Requested control plane protection flags,
-         * from the enum set 'dpdk_cp_prot_flags' */
+         * from the enum set 'dpdk_cp_prot_flags'. */
         uint64_t requested_cp_prot_flags;
         uint64_t cp_prot_flags;
         size_t cp_prot_flows_num;
@@ -5314,7 +5314,7 @@ dpdk_cp_prot_configure(struct netdev_dpdk *dev)
     }
 
     if (dev->cp_prot_flows_num) {
-        /* reconfigure RSS reta in all but the cp protection queue */
+        /* Reconfigure RSS reta in all but the cp protection queue. */
         err = dpdk_cp_prot_rss_configure(dev, dev->up.n_rxq - 1);
         if (!err) {
             if (dev->up.n_rxq == 2) {
@@ -5446,7 +5446,7 @@ retry:
     if (try_cp_prot) {
         err = dpdk_cp_prot_configure(dev);
         if (err) {
-            /* no hw support, disable & recover gracefully */
+            /* No hw support, disable & recover gracefully. */
             try_cp_prot = false;
             /*
              * The extra queue must be explicitly removed here to ensure that
