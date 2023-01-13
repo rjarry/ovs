@@ -1313,7 +1313,6 @@ common_construct(struct netdev *netdev, dpdk_port_t port_no,
     dev->attached = false;
     dev->started = false;
     dev->reset_needed = false;
-    dev->tx_q = NULL;
 
     ovsrcu_init(&dev->qos_conf, NULL);
 
