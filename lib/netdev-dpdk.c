@@ -5424,6 +5424,7 @@ retry:
     dev->txq_size = dev->requested_txq_size;
 
     rte_free(dev->tx_q);
+    dev->tx_q = NULL;
 
     if (!eth_addr_equals(dev->hwaddr, dev->requested_hwaddr)) {
         err = netdev_dpdk_set_etheraddr__(dev, dev->requested_hwaddr);
