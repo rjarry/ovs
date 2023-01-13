@@ -5363,8 +5363,6 @@ dpdk_cp_prot_unconfigure(struct netdev_dpdk *dev)
     free(dev->cp_prot_flows);
     dev->cp_prot_flows_num = 0;
     dev->cp_prot_flows = NULL;
-
-    (void) dpdk_cp_prot_rss_configure(dev, dev->up.n_rxq);
 }
 
 static int
