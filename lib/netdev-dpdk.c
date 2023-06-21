@@ -5584,7 +5584,7 @@ netdev_dpdk_reconfigure(struct netdev *netdev)
 
     try_rx_steer = dev->requested_rx_steer_flags != 0;
     dev->requested_n_rxq = dev->user_n_rxq;
-    if (try_cp_prot) {
+    if (try_rx_steer) {
         dev->requested_n_rxq += 1;
     }
 
