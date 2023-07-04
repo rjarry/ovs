@@ -1571,7 +1571,7 @@ common_destruct(struct netdev_dpdk *dev)
     ovs_mutex_destroy(&dev->mutex);
 }
 
-static void dpdk_rx_steer_unconfigure(struct netdev_dpdk *dev);
+static void dpdk_rx_steer_unconfigure(struct netdev_dpdk *);
 
 static void
 netdev_dpdk_destruct(struct netdev *netdev)
@@ -1580,7 +1580,7 @@ netdev_dpdk_destruct(struct netdev *netdev)
 
     ovs_mutex_lock(&dpdk_mutex);
 
-    /* Destroy any rte flows to allow RXQs to be removed. */
+    /* Destroy any rx-steering flows to allow RXQs to be removed. */
     dpdk_rx_steer_unconfigure(dev);
 
     rte_eth_dev_stop(dev->port_id);
@@ -1837,7 +1837,7 @@ netdev_dpdk_get_config(const struct netdev *netdev, struct smap *args)
             smap_add(args, "rx_csum_offload", "false");
         }
         if (dev->rx_steer_flags == DPDK_RX_STEER_LACP) {
-            smap_add(args, "rx_steering", "rss+lacp");
+            smap_add(args, "rx-steering", "rss+lacp");
         }
         smap_add(args, "lsc_interrupt_mode",
                  dev->lsc_interrupt_mode ? "true" : "false");
@@ -2054,18 +2054,18 @@ static void
 dpdk_set_rx_steer_config(struct netdev *netdev, struct netdev_dpdk *dev,
                          const struct smap *args, char **errp)
 {
-    const char *arg = smap_get_def(args, "rx-steering", "");
+    const char *arg = smap_get_def(args, "rx-steering", "rss");
     uint64_t flags = 0;
 
-    if (strcmp(arg, "rss+lacp") == 0) {
+    if (nullable_string_is_equal(arg, "rss+lacp")) {
         flags = DPDK_RX_STEER_LACP;
-    } else if (strcmp(arg, "") != 0 && strcmp(arg, "rss") != 0) {
+    } else if (!nullable_string_is_equal(arg, "rss")) {
         VLOG_WARN_BUF(errp, "%s options:rx-steering "
                       "unsupported parameter value '%s'",
                       netdev_get_name(netdev), arg);
     }
 
-    if (strcmp(arg, "") != 0 && dev->type != DPDK_DEV_ETH) {
+    if (flags && dev->type != DPDK_DEV_ETH) {
         VLOG_WARN_BUF(errp, "%s options:rx-steering "
                       "is only supported on ethernet ports",
                       netdev_get_name(netdev));
@@ -5436,7 +5436,7 @@ dpdk_rx_steer_add_flow(struct netdev_dpdk *dev,
     }
 
     num = dev->rx_steer_flows_num + 1;
-    dev->rx_steer_flows = xrealloc(dev->rx_steer_flows, sizeof(flow) * num);
+    dev->rx_steer_flows = xrealloc(dev->rx_steer_flows, num * sizeof flow);
     dev->rx_steer_flows[dev->rx_steer_flows_num] = flow;
     dev->rx_steer_flows_num = num;
 
@@ -5481,12 +5481,12 @@ dpdk_rx_steer_rss_configure(struct netdev_dpdk *dev, int rss_n_rxq)
          * Work around that corner case by forcing a bigger redirection table
          * size to 128 entries when reta_size is not a multiple of rss_n_rxq
          * and when reta_size is less than 128. This value seems to be
-         * supported by most of the drivers that also support rte flow.
+         * supported by most of the drivers that also support rte_flow.
          */
         info.reta_size = RTE_ETH_RSS_RETA_SIZE_128;
     }
 
-    memset(reta_conf, 0, sizeof(reta_conf));
+    memset(reta_conf, 0, sizeof reta_conf);
     for (uint16_t i = 0; i < info.reta_size; i++) {
         uint16_t idx = i / RTE_ETH_RETA_GROUP_SIZE;
         uint16_t shift = i % RTE_ETH_RETA_GROUP_SIZE;
@@ -5677,7 +5677,7 @@ retry:
             goto retry;
         }
     } else {
-        VLOG_INFO("%s: rx-steering: disabled", netdev_get_name(&dev->up));
+        VLOG_INFO("%s: rx-steering: default rss", netdev_get_name(&dev->up));
     }
     dev->rx_steer_flags = dev->requested_rx_steer_flags;
 
@@ -5892,8 +5892,8 @@ netdev_dpdk_flow_api_supported(struct netdev *netdev)
     ovs_mutex_lock(&dev->mutex);
     if (dev->type == DPDK_DEV_ETH) {
         if (dev->requested_rx_steer_flags) {
-            VLOG_WARN("%s: disabling rx-steering as it is "
-                      "mutually exclusive with hw-offload.",
+            VLOG_WARN("%s: rx-steering is mutually exclusive with hw-offload,"
+                      " falling back to default rss mode",
                       netdev_get_name(netdev));
             dev->requested_rx_steer_flags = 0;
             netdev_request_reconfigure(netdev);

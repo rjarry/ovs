@@ -3544,15 +3544,16 @@ ovs-vsctl add-port br0 p0 -- set Interface p0 type=patch options:peer=p1 \
           allocated for the specified protocols. Even if the hardware cannot
           satisfy the requested number of requested Rx queues, the last Rx
           queue will be used. If only one Rx queue is available or if the
-          hardware does not support the RTE flow matchers/actions required to
+          hardware does not support the rte_flow matchers/actions required to
           redirect the selected protocols, custom <code>rx-steering</code> will
-          be disabled.
+          fall back to default <code>rss</code> mode.
         </p>
         <p>
           This feature is mutually exclusive with
-          <code>other_options:hw-offload</code> as it may conflict with the
-          offloaded RTE flows. If both are enabled, <code>rx-steering</code>
-          will be forcibly disabled.
+          <ref table="Open_vSwitch" column="other_config" key="hw-offload" />
+          as it may conflict with the offloaded RTE flows. If both are enabled,
+          <code>rx-steering</code> will fall back to default <code>rss</code>
+          mode.
         </p>
       </column>
 

@@ -138,7 +138,7 @@ Traffic Rx Steering
 
 Some control protocols are used to maintain link status between forwarding
 engines. In SDN environments, these packets share the same physical network
-than the user data traffic.
+with the user data traffic.
 
 When the system is not sized properly, the PMD threads may not be able to
 process all incoming traffic from the configured Rx queues. When a signaling
@@ -210,13 +210,13 @@ To disable Rx steering on a port, use the following command::
 
 You can see that it has been disabled in ``ovs-vswitchd.log``::
 
-   INFO|dpdk-p0: rx-steering: disabled
+   INFO|dpdk-p0: rx-steering: default rss
 
 .. warning::
 
-   This feature is mutually exclusive with ``other_options:hw-offload`` as it
-   may conflict with the offloaded RTE flows. If both are enabled,
-   ``rx-steering`` will be forcibly disabled.
+   This feature is mutually exclusive with ``other-config:hw-offload`` as it
+   may conflict with the offloaded flows. If both are enabled, ``rx-steering``
+   will fall back to default ``rss`` mode.
 
 .. _dpdk-phy-flow-control:
 
