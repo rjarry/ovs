@@ -23,6 +23,7 @@
 
 #include <rte_cpuflags.h>
 #include <rte_errno.h>
+#include <rte_ethdev.h>
 #include <rte_log.h>
 #include <rte_malloc.h>
 #include <rte_memzone.h>
@@ -304,6 +305,165 @@ dpdk_unixctl_log_set(struct unixctl_conn *conn, int argc, const char *argv[],
     unixctl_command_reply(conn, NULL);
 }
 
+static const char *
+dpdk_rss_flag_name(uint64_t flag) {
+    switch (flag) {
+    case RTE_ETH_RSS_IPV4: return "ipv4";
+    case RTE_ETH_RSS_FRAG_IPV4: return "frag-ipv4";
+    case RTE_ETH_RSS_NONFRAG_IPV4_TCP: return "nonfrag-ipv4-tcp";
+    case RTE_ETH_RSS_NONFRAG_IPV4_UDP: return "nonfrag-ipv4-udp";
+    case RTE_ETH_RSS_NONFRAG_IPV4_SCTP: return "nonfrag-ipv4-sctp";
+    case RTE_ETH_RSS_NONFRAG_IPV4_OTHER: return "nonfrag-ipv4-other";
+    case RTE_ETH_RSS_IPV6: return "ipv6";
+    case RTE_ETH_RSS_FRAG_IPV6: return "frag-ipv6";
+    case RTE_ETH_RSS_NONFRAG_IPV6_TCP: return "nonfrag-ipv6-tcp";
+    case RTE_ETH_RSS_NONFRAG_IPV6_UDP: return "nonfrag-ipv6-udp";
+    case RTE_ETH_RSS_NONFRAG_IPV6_SCTP: return "nonfrag-ipv6-sctp";
+    case RTE_ETH_RSS_NONFRAG_IPV6_OTHER: return "nonfrag-ipv6-other";
+    case RTE_ETH_RSS_L2_PAYLOAD: return "l2-payload";
+    case RTE_ETH_RSS_IPV6_EX: return "ipv6-ex";
+    case RTE_ETH_RSS_IPV6_TCP_EX: return "ipv6-tcp-ex";
+    case RTE_ETH_RSS_IPV6_UDP_EX: return "ipv6-udp-ex";
+    case RTE_ETH_RSS_PORT: return "port";
+    case RTE_ETH_RSS_VXLAN: return "vxlan";
+    case RTE_ETH_RSS_GENEVE: return "geneve";
+    case RTE_ETH_RSS_NVGRE: return "nvgre";
+    case RTE_ETH_RSS_GTPU: return "gtpu";
+    case RTE_ETH_RSS_ETH: return "eth";
+    case RTE_ETH_RSS_S_VLAN: return "s-vlan";
+    case RTE_ETH_RSS_C_VLAN: return "c-vlan";
+    case RTE_ETH_RSS_ESP: return "esp";
+    case RTE_ETH_RSS_AH: return "ah";
+    case RTE_ETH_RSS_L2TPV3: return "l2tpv3";
+    case RTE_ETH_RSS_PFCP: return "pfcp";
+    case RTE_ETH_RSS_PPPOE: return "pppoe";
+    case RTE_ETH_RSS_ECPRI: return "ecpri";
+    case RTE_ETH_RSS_MPLS: return "mpls";
+    case RTE_ETH_RSS_IPV4_CHKSUM: return "ipv4-chksum";
+    case RTE_ETH_RSS_L4_CHKSUM: return "l4-chksum";
+    case RTE_ETH_RSS_L2TPV2: return "l2tpv2";
+    case RTE_ETH_RSS_L3_SRC_ONLY: return "l3-src-only";
+    case RTE_ETH_RSS_L3_DST_ONLY: return "l3-dst-only";
+    case RTE_ETH_RSS_L4_SRC_ONLY: return "l4-src-only";
+    case RTE_ETH_RSS_L4_DST_ONLY: return "l4-dst-only";
+    case RTE_ETH_RSS_L2_SRC_ONLY: return "l2-src-only";
+    case RTE_ETH_RSS_L2_DST_ONLY: return "l2-dst-only";
+    case RTE_ETH_RSS_L3_PRE32: return "l3-pre32";
+    case RTE_ETH_RSS_L3_PRE40: return "l3-pre40";
+    case RTE_ETH_RSS_L3_PRE48: return "l3-pre48";
+    case RTE_ETH_RSS_L3_PRE56: return "l3-pre56";
+    case RTE_ETH_RSS_L3_PRE64: return "l3-pre64";
+    case RTE_ETH_RSS_L3_PRE96: return "l3-pre96";
+    }
+    return NULL;
+}
+
+#define RETA_CONF_SIZE (RTE_ETH_RSS_RETA_SIZE_512 / RTE_ETH_RETA_GROUP_SIZE)
+
+static void
+dpdk_rss_conf_get(struct unixctl_conn *conn, int argc, const char *argv[],
+                  void *aux OVS_UNUSED)
+{
+    bool show_reta = false;
+    char *response = NULL;
+    uint16_t port_id;
+    FILE *stream;
+    size_t size;
+
+    stream = open_memstream(&response, &size);
+    if (!stream) {
+        response = xasprintf("Unable to open memstream: %s.",
+                             ovs_strerror(errno));
+        unixctl_command_reply_error(conn, response);
+        goto out;
+    }
+    if (argc > 2 || (argc == 2 &&
+            !nullable_string_is_equal(argv[1], "--reta"))) {
+        response = xasprintf("Invalid arguments: usage: %s [--reta]", argv[0]);
+        unixctl_command_reply_error(conn, response);
+        goto out;
+    }
+    if (argc == 2 && nullable_string_is_equal(argv[1], "--reta")) {
+        show_reta = true;
+    }
+
+    RTE_ETH_FOREACH_DEV(port_id) {
+        struct rte_eth_rss_reta_entry64 reta_conf[RETA_CONF_SIZE];
+        struct rte_eth_rss_conf rss_conf;
+        struct rte_eth_dev_info info;
+        uint8_t rss_key[64];
+        int rc;
+
+        memset(&rss_conf, 0, sizeof(rss_conf));
+        memset(reta_conf, 0xff, sizeof(reta_conf));
+        memset(rss_key, 0, sizeof(rss_key));
+        memset(&info, 0, sizeof(info));
+
+        rc = rte_eth_dev_info_get(port_id, &info);
+        if (rc < 0) {
+            fprintf(stream, "port_id %"PRIu16
+                    " rte_eth_dev_info_get error: %s\n",
+                    port_id, ovs_strerror(-rc));
+        }
+        rss_conf.rss_key_len = info.hash_key_size;
+        rss_conf.rss_key = rss_key;
+        rc = rte_eth_dev_rss_hash_conf_get(port_id, &rss_conf);
+        if (rc < 0) {
+            fprintf(stream, "port_id %"PRIu16
+                    " rte_eth_dev_rss_hash_conf_get error: %s\n",
+                    port_id, ovs_strerror(-rc));
+        }
+        if (show_reta) {
+            rc = rte_eth_dev_rss_reta_query(port_id, reta_conf,
+                                            info.reta_size);
+            if (rc < 0) {
+                fprintf(stream, "port_id %"PRIu16
+                        " rte_eth_dev_rss_reta_query error: %s\n",
+                        port_id, ovs_strerror(-rc));
+            }
+        }
+
+        fprintf(stream, "port_id %"PRIu16" rss configuration:\n", port_id);
+
+        fprintf(stream, "  num rxq = %"PRIu16"\n", info.nb_rx_queues);
+        fprintf(stream, "  hash function =");
+        for (uint64_t i = 0; i < 64; i++) {
+            uint64_t flag = 1ULL << i;
+            const char *name = dpdk_rss_flag_name(flag);
+            if (!(rss_conf.rss_hf & flag) || name == NULL)
+                continue;
+            fprintf(stream, " %s", name);
+        }
+        fprintf(stream, "\n");
+        fprintf(stream, "  key length = %"PRIu8"\n", info.hash_key_size);
+        fprintf(stream, "  key hash = ");
+        for (uint8_t i = 0; i < info.hash_key_size; i++) {
+            fprintf(stream, "%02"PRIx8, rss_conf.rss_key[i]);
+        }
+        fprintf(stream, "\n");
+
+        fprintf(stream, "  reta size = %"PRIu16"\n", info.reta_size);
+        if (!show_reta)
+            continue;
+        fprintf(stream, "  reta =");
+        for (uint16_t i = 0; i < info.reta_size; i++) {
+            uint16_t idx = i / RTE_ETH_RETA_GROUP_SIZE;
+            uint16_t shift = i % RTE_ETH_RETA_GROUP_SIZE;
+            if ((i % 8) == 0)
+                fprintf(stream, "\n");
+            if (!(reta_conf[idx].mask & (1ULL << shift)))
+                continue;
+            fprintf(stream, "\t%i=%"PRIu16"", i, reta_conf[idx].reta[shift]);
+        }
+        fprintf(stream, "\n");
+    }
+
+    fclose(stream);
+    unixctl_command_reply(conn, response);
+out:
+    free(response);
+}
+
 static void
 malloc_dump_stats_wrapper(FILE *stream)
 {
@@ -436,6 +596,8 @@ dpdk_init__(const struct smap *ovs_other_config)
     unixctl_command_register("dpdk/get-malloc-stats", "", 0, 0,
                              dpdk_unixctl_mem_stream,
                              malloc_dump_stats_wrapper);
+    unixctl_command_register("dpdk/rss-conf-get", "[--reta]", 0, 1,
+                             dpdk_rss_conf_get, NULL);
 
     /* We are called from the main thread here */
     RTE_PER_LCORE(_lcore_id) = NON_PMD_CORE_ID;
