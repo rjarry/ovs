@@ -735,6 +735,7 @@ netdev_rxq_recv(struct netdev_rxq *rx, struct dp_packet_batch *batch,
     if (!retval) {
         COVERAGE_INC(netdev_received);
     } else {
+        rx->packets += batch->count;
         batch->count = 0;
     }
     return retval;

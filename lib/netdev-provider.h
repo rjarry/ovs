@@ -139,6 +139,7 @@ struct netdev **netdev_get_vports(size_t *size);
 struct netdev_rxq {
     struct netdev *netdev;      /* Owns a reference to the netdev. */
     int queue_id;
+    uint64_t packets;
 };
 
 struct netdev *netdev_rxq_get_netdev(const struct netdev_rxq *);

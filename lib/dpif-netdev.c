@@ -938,6 +938,7 @@ pmd_info_show_rxq(struct ds *reply, struct dp_netdev_pmd_thread *pmd,
             } else {
                 ds_put_format(reply, "%s", "NOT AVAIL");
             }
+            ds_put_format(reply, "    packets: %"PRIu64, rxq->rx->packets);
             ds_put_cstr(reply, "\n");
         }
 
